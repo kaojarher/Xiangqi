@@ -167,6 +167,13 @@ footer{max-width:1180px;margin:0 auto;padding:0 14px 20px;color:var(--muted);fon
     <div class="pane" id="p-set" hidden>
       <label>棋子樣式 <select id="sDisp"><option value="both">emoji＋文字</option><option value="char">只有文字</option><option value="emoji">只有 emoji</option></select></label><br>
       <label>主題 <select id="sTheme"><option value="auto">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label><br>
+      <fieldset><legend>🗣️ 語音報步</legend>
+        <label>念出 <select id="sVoiceMode"><option value="opp">對手走子（預設）</option><option value="all">所有走子</option><option value="off">關閉</option></select></label><br>
+        <label>聲音 <select id="sVoice"></select></label><br>
+        <label>語速 <input type="range" id="sRate" min="0.6" max="1.6" step="0.1" style="width:120px"></label>
+        <button class="btn small" id="bVoiceTest">▶ 試聽</button>
+        <div class="muted" id="voiceHint">用走子記錄當語音，例如「炮二平五」；將軍與勝負也會播報。</div>
+      </fieldset>
       <label><input type="checkbox" id="sDots"> 顯示可走位置</label>
       <label><input type="checkbox" id="sAutoFlip"> 雙人同機自動翻轉棋盤</label>
       <fieldset><legend>📖 規則（簡化）</legend>
@@ -356,7 +363,7 @@ var CELL=60,OFF=40;
 var esc=function(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});};
 
 /* ---------- settings ---------- */
-var S={mode:'ai',disp:'both',sound:true,theme:'auto',dots:true,autoFlip:false,pName:'玩家',aiColor:'r',aiLevel:2,nameR:'紅方',nameB:'黑方',tour:{n:4,players:[]}};
+var S={mode:'ai',disp:'both',sound:true,voiceMode:'opp',voiceName:'',voiceRate:1,theme:'auto',dots:true,autoFlip:false,pName:'玩家',aiColor:'r',aiLevel:2,nameR:'紅方',nameB:'黑方',tour:{n:4,players:[]}};
 (function(){
   var names=['玩家1','玩家2','玩家3','玩家4','電腦A','電腦B','電腦C','電腦D'];
   for(var i=0;i<8;i++)S.tour.players.push({name:names[i],type:i<2?'human':'ai',level:[2,2,3,1,2,3,4,1][i]});
@@ -421,6 +428,56 @@ function rebuild(startFen,moves,ext){
 var G=rebuild(INIT,[]),MODE='ai',SEATS={r:{type:'human',name:'紅方'},b:{type:'ai',name:'電腦',level:2}};
 var view='r',sel=null,hint=null,viewPly=null,thinking=false,aiToken=0,gameSerial=0,handled='',bannerHidden=false,NET=null,CHAT=[],viewSer=-1,lastMove=null;
 var seatName=function(c){return SEATS[c]&&SEATS[c].name||'';};
+
+/* ---------- voice (Web Speech API) ---------- */
+var HAS_TTS='speechSynthesis' in window&&'SpeechSynthesisUtterance' in window,VOICES=[];
+function loadVoices(){
+  if(!HAS_TTS)return;
+  VOICES=speechSynthesis.getVoices().filter(function(v){return /^(zh|cmn|yue)/i.test(v.lang);}).sort(function(a,b){return (isTW(b)?1:0)-(isTW(a)?1:0)||(isHK(a)?1:0)-(isHK(b)?1:0);});
+  var sel=$('#sVoice');if(!sel)return;
+  sel.innerHTML='<option value="">自動（優先台灣國語）</option>'+VOICES.map(function(v){return '<option value="'+esc(v.name)+'">'+esc(v.name)+' ('+esc(v.lang)+')</option>';}).join('');
+  sel.value=S.voiceName||'';
+  if(!VOICES.length)$('#voiceHint').textContent='⚠️ 此裝置沒有中文語音，請在系統設定安裝中文語音。';
+  else if(!VOICES.some(function(v){return isTW(v)&&!isHK(v);}))$('#voiceHint').textContent='⚠️ 找不到台灣國語語音，目前使用其他中文語音；可在系統設定安裝「中文（台灣）」語音。';
+}
+function speakText(n){
+  // 讓語音引擎唸得自然：全形數字轉中文數字、罕用字換成同音常用字
+  var map={'０':'零','１':'一','２':'二','３':'三','４':'四','５':'五','６':'六','７':'七','８':'八','９':'九','傌':'馬','俥':'車','包':'炮','相':'象','仕':'士'};
+  return n.replace(/[０-９傌俥包相仕]/g,function(c){return map[c];});
+}
+function isTW(v){return /(zh|cmn)[-_]?(Hant)?[-_]?TW/i.test(v.lang)||/台灣|台湾|Taiwan|Mandarin.*Taiwan|HsiaoChen|HsiaoYu|YunJhe|Meijia|Mei-Jia/i.test(v.name);}
+function isHK(v){return /HK|yue|Cantonese|粵|粤|廣東|广东|Sinji|Sin-ji|HiuMaan|WanLung/i.test(v.lang+' '+v.name);}
+function pickVoice(){
+  var by=function(f){return VOICES.filter(f)[0];};
+  return by(function(x){return x.name===S.voiceName;})||by(function(x){return isTW(x)&&!isHK(x);})
+    ||by(function(x){return !isHK(x);})||VOICES[0];
+}
+function speak(text){
+  if(!HAS_TTS||S.voiceMode==='off'||!text)return;
+  try{
+    speechSynthesis.cancel();
+    var u=new SpeechSynthesisUtterance(text);
+    var v=pickVoice();
+    u.lang=v?v.lang:'zh-TW';if(v)u.voice=v;
+    u.rate=S.voiceRate||1;speechSynthesis.speak(u);
+  }catch(e){}
+}
+function announceMove(){
+  if(!HAS_TTS||S.voiceMode==='off'||!G.moves.length)return;
+  var mover=G.movers[G.movers.length-1],mine=false;
+  if(S.voiceMode==='opp'){
+    if(MODE==='online')mine=myColor()===mover;
+    else if(MODE==='ai')mine=SEATS[mover].type==='human';
+    else mine=false;   // 雙人同機／循環賽：全部念出
+  }
+  if(mine)return;
+  var t=speakText(G.notes[G.notes.length-1]);
+  if(G.result){
+    var r=G.result;
+    t+='。'+(r.winner==='draw'?'和棋':(r.winner==='r'?'紅':'黑')+'方勝，'+r.reason.replace(/（.*）/,''));
+  }else if(G.inCheck)t+='，將軍';
+  speak(t);
+}
 
 /* ---------- sound / toast / ask ---------- */
 var actx=null;
@@ -632,6 +689,7 @@ function onStateChanged(anim){
   else if(S.autoFlip&&(MODE==='pvp'||MODE==='tour')&&SEATS.r.type==='human'&&SEATS.b.type==='human'&&!G.result)view=G.turn;
   render(anim);
   if(anim&&G.moves.length){if(G.inCheck&&!G.result){beep(880,.12,'square',.05);setTimeout(function(){beep(660,.15,'square',.05);},130);}else if(G.caps[G.caps.length-1])beep(300,.16,'square',.06);else beep(520,.08,'triangle',.09);}
+  if(anim)announceMove();
   checkResult();autosave();maybeAI();
 }
 function checkResult(){
@@ -803,6 +861,11 @@ $('#nameB').oninput=function(){S.nameB=this.value;saveSettings();};
 function applyTheme(){var r=document.documentElement;if(S.theme==='auto')r.removeAttribute('data-theme');else r.setAttribute('data-theme',S.theme);}
 $('#sDisp').onchange=function(){S.disp=this.value;saveSettings();render(false);};
 $('#sTheme').onchange=function(){S.theme=this.value;saveSettings();applyTheme();};
+$('#sVoiceMode').onchange=function(){S.voiceMode=this.value;saveSettings();if(this.value==='off'&&HAS_TTS)speechSynthesis.cancel();};
+$('#sVoice').onchange=function(){S.voiceName=this.value;saveSettings();};
+$('#sRate').oninput=function(){S.voiceRate=+this.value;saveSettings();};
+$('#bVoiceTest').onclick=function(){var m=S.voiceMode;S.voiceMode='all';speak('炮二平五，將軍');S.voiceMode=m;};
+if(HAS_TTS){loadVoices();speechSynthesis.onvoiceschanged=loadVoices;}else{$('#voiceHint').textContent='⚠️ 此瀏覽器不支援語音合成。';}
 $('#sDots').onchange=function(){S.dots=this.checked;saveSettings();render(false);};
 $('#sAutoFlip').onchange=function(){S.autoFlip=this.checked;saveSettings();};
 
@@ -1101,7 +1164,7 @@ $('#chatForm').onsubmit=function(e){e.preventDefault();var v=$('#chatIn').value.
 $('#emojis').onclick=function(e){if(e.target.tagName==='BUTTON')act('chat',{text:e.target.textContent});};
 
 /* ---------- boot ---------- */
-$('#sDisp').value=S.disp;$('#sTheme').value=S.theme;$('#sDots').checked=S.dots;$('#sAutoFlip').checked=S.autoFlip;
+$('#sVoiceMode').value=S.voiceMode;$('#sRate').value=S.voiceRate;$('#sDisp').value=S.disp;$('#sTheme').value=S.theme;$('#sDots').checked=S.dots;$('#sAutoFlip').checked=S.autoFlip;
 $('#btnSound').textContent=S.sound?'🔊':'🔇';$('#netName').value=S.pName||'';
 applyTheme();initWorker();
 window.addEventListener('resize',function(){});
